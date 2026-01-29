@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import wave
+#
 from array import array
 from collections import deque
 from dataclasses import dataclass
@@ -206,15 +207,18 @@ def render_pianoroll_to_wav(
 
 
 class AudioRenderWorker(QObject):
-    finished = Signal(str)
-    cancelled = Signal()
-    failed = Signal(str)
+    # Importante: incluir gen/key en la señal para sincronizar en el hilo de UI.
+    finished = Signal(int, object, str)  # generation, render_key, wav_path
+    cancelled = Signal(int)
+    failed = Signal(int, str)
 
-    def __init__(self, notes: list[Note], ppq: int, bpm: float) -> None:
+    def __init__(self, notes: list[Note], ppq: int, bpm: float, generation: int, render_key: tuple) -> None:
         super().__init__()
         self._notes = [Note(pitch=n.pitch, start=n.start, length=n.length) for n in notes]
         self._ppq = ppq
         self._bpm = bpm
+        self._generation = int(generation)
+        self._render_key = render_key
         self._cancel = False
 
     @Slot()
@@ -242,16 +246,16 @@ class AudioRenderWorker(QObject):
                     os.remove(path)
                 except OSError:
                     pass
-                self.cancelled.emit()
+                self.cancelled.emit(self._generation)
                 return
-            self.finished.emit(path)
+            self.finished.emit(self._generation, self._render_key, path)
         except Exception as e:
             if path:
                 try:
                     os.remove(path)
                 except OSError:
                     pass
-            self.failed.emit(str(e))
+            self.failed.emit(self._generation, str(e))
 
 
 class PianoRollWidget(QWidget):
@@ -794,6 +798,8 @@ class MainWindow(QMainWindow):
         self._render_thread: Optional[QThread] = None
         self._render_worker: Optional[AudioRenderWorker] = None
         self._render_generation = 0  # para invalidar renders viejos (Stop)
+        self._cached_render_key: Optional[tuple] = None
+        self._cached_render_path: Optional[str] = None
 
         # Grabación / teclado / playhead
         self._record_enabled = False
@@ -968,19 +974,27 @@ class MainWindow(QMainWindow):
         # Play siempre desde el inicio
         self.roll.set_playhead_tick(0)
         self.roll.ensure_playhead_visible()
-        self._start_transport()
         self.roll.record_enabled = self._record_enabled
+
+        # Cache: si no cambió nada, evitamos re-render y el audio arranca ya.
+        key = self._compute_render_key()
+        if self._cached_render_key == key and self._cached_render_path and os.path.exists(self._cached_render_path):
+            self._start_main_playback(self._cached_render_path)
+            self._start_transport()
+            self.statusBar().showMessage(f"Reproduciendo ({int(self._bpm)} BPM)")
+            return
+
         self.statusBar().showMessage(f"Renderizando audio… ({int(self._bpm)} BPM)")
 
         # Render en background para no congelar UI
         t = QThread(self)
-        w = AudioRenderWorker(self.roll.notes, ppq=self.roll.ppq, bpm=self._bpm)
+        w = AudioRenderWorker(self.roll.notes, ppq=self.roll.ppq, bpm=self._bpm, generation=gen, render_key=key)
         w.moveToThread(t)
         t.started.connect(w.run)
-        # Conectar con gen capturado (más fiable que self.sender() en PySide)
-        w.finished.connect(lambda path, gen=gen: self._on_render_finished_for(gen, path))
-        w.cancelled.connect(lambda gen=gen: self._on_render_cancelled_for(gen))
-        w.failed.connect(lambda err, gen=gen: self._on_render_failed_for(gen, err))
+        # Forzar QueuedConnection: siempre ejecutar en el hilo de UI.
+        w.finished.connect(self._on_render_finished_ui, Qt.ConnectionType.QueuedConnection)
+        w.cancelled.connect(self._on_render_cancelled_ui, Qt.ConnectionType.QueuedConnection)
+        w.failed.connect(self._on_render_failed_ui, Qt.ConnectionType.QueuedConnection)
         w.finished.connect(t.quit)
         w.cancelled.connect(t.quit)
         w.failed.connect(t.quit)
@@ -1011,7 +1025,8 @@ class MainWindow(QMainWindow):
             self.roll.ensure_playhead_visible()
         self.statusBar().showMessage("Stop")
 
-    def _on_render_finished_for(self, gen: int, path: str) -> None:
+    @Slot(int, object, str)
+    def _on_render_finished_ui(self, gen: int, key: object, path: str) -> None:
         if gen != self._render_generation:
             try:
                 os.remove(path)
@@ -1025,14 +1040,20 @@ class MainWindow(QMainWindow):
             except OSError:
                 pass
         self._current_wav_path = path
+        # key llega como object por Qt, pero es un tuple nuestro.
+        self._cached_render_key = key  # type: ignore[assignment]
+        self._cached_render_path = path
 
         self._start_main_playback(path)
+        # Empezar el playhead cuando el audio empieza (no durante el render)
+        self._start_transport()
         self.statusBar().showMessage(f"Reproduciendo ({int(self._bpm)} BPM)")
 
         self._render_thread = None
         self._render_worker = None
 
-    def _on_render_cancelled_for(self, gen: int) -> None:
+    @Slot(int)
+    def _on_render_cancelled_ui(self, gen: int) -> None:
         if gen != self._render_generation:
             return
         self.statusBar().showMessage("Render cancelado")
@@ -1040,7 +1061,8 @@ class MainWindow(QMainWindow):
         self._render_thread = None
         self._render_worker = None
 
-    def _on_render_failed_for(self, gen: int, err: str) -> None:
+    @Slot(int, str)
+    def _on_render_failed_ui(self, gen: int, err: str) -> None:
         if gen != self._render_generation:
             return
         self.statusBar().showMessage(f"Error audio: {err}")
@@ -1154,6 +1176,11 @@ class MainWindow(QMainWindow):
         else:
             self._player.setSource(QUrl.fromLocalFile(path))
             self._player.play()
+
+    def _compute_render_key(self) -> tuple:
+        # Determinista y suficientemente barato para cachear renders.
+        notes_key = tuple(sorted((n.pitch, int(n.start), int(n.length)) for n in self.roll.notes))
+        return (int(self.roll.ppq), float(self._bpm), notes_key)
 
     @Slot()
     def _on_player_error(self, *_args) -> None:
