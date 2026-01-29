@@ -785,6 +785,7 @@ class MainWindow(QMainWindow):
         self._winsound_is_playing = False
         self._prefer_winsound = (os.name == "nt" and _winsound is not None)
         self._main_play_obj: Optional[object] = None  # simpleaudio playback handle
+        self._main_audio_bytes: Optional[bytes] = None  # mantener buffer vivo durante play (simpleaudio)
 
         self._preview_effect = QSoundEffect(self)
         self._preview_effect.setVolume(0.5)
@@ -804,6 +805,7 @@ class MainWindow(QMainWindow):
         self._play_timer.timeout.connect(self._tick_playhead)
         self._play_elapsed = QElapsedTimer()
         self._play_start_tick = 0
+        self._transport_running = False
 
         QApplication.instance().installEventFilter(self)
 
@@ -891,6 +893,7 @@ class MainWindow(QMainWindow):
         self._play_elapsed.restart()
         if not self._play_timer.isActive():
             self._play_timer.start()
+        self._transport_running = True
 
     def _maybe_stop_transport(self) -> None:
         # Solo paramos el playhead si no hay audio y no está armado Grabar
@@ -899,6 +902,7 @@ class MainWindow(QMainWindow):
         if self._is_audio_playing():
             return
         self._play_timer.stop()
+        self._transport_running = False
 
     def _stop_playback(self, delete_file: bool) -> None:
         # simpleaudio (si está en uso)
@@ -908,6 +912,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
             self._main_play_obj = None
+            self._main_audio_bytes = None
 
         if self._prefer_winsound and _winsound is not None:
             try:
@@ -970,12 +975,12 @@ class MainWindow(QMainWindow):
         # Render en background para no congelar UI
         t = QThread(self)
         w = AudioRenderWorker(self.roll.notes, ppq=self.roll.ppq, bpm=self._bpm)
-        setattr(w, "generation", gen)
         w.moveToThread(t)
         t.started.connect(w.run)
-        w.finished.connect(self._on_render_finished)
-        w.cancelled.connect(self._on_render_cancelled)
-        w.failed.connect(self._on_render_failed)
+        # Conectar con gen capturado (más fiable que self.sender() en PySide)
+        w.finished.connect(lambda path, gen=gen: self._on_render_finished_for(gen, path))
+        w.cancelled.connect(lambda gen=gen: self._on_render_cancelled_for(gen))
+        w.failed.connect(lambda err, gen=gen: self._on_render_failed_for(gen, err))
         w.finished.connect(t.quit)
         w.cancelled.connect(t.quit)
         w.failed.connect(t.quit)
@@ -996,6 +1001,7 @@ class MainWindow(QMainWindow):
         self._stop_playback(delete_file=False)
         # Stop "real": detener transporte incluso si Grabar está armado
         self._play_timer.stop()
+        self._transport_running = False
         try:
             self._play_elapsed.invalidate()
         except Exception:
@@ -1005,10 +1011,7 @@ class MainWindow(QMainWindow):
             self.roll.ensure_playhead_visible()
         self.statusBar().showMessage("Stop")
 
-    @Slot(str)
-    def _on_render_finished(self, path: str) -> None:
-        sender = self.sender()
-        gen = getattr(sender, "generation", None)
+    def _on_render_finished_for(self, gen: int, path: str) -> None:
         if gen != self._render_generation:
             try:
                 os.remove(path)
@@ -1029,10 +1032,7 @@ class MainWindow(QMainWindow):
         self._render_thread = None
         self._render_worker = None
 
-    @Slot()
-    def _on_render_cancelled(self) -> None:
-        sender = self.sender()
-        gen = getattr(sender, "generation", None)
+    def _on_render_cancelled_for(self, gen: int) -> None:
         if gen != self._render_generation:
             return
         self.statusBar().showMessage("Render cancelado")
@@ -1040,10 +1040,7 @@ class MainWindow(QMainWindow):
         self._render_thread = None
         self._render_worker = None
 
-    @Slot(str)
-    def _on_render_failed(self, err: str) -> None:
-        sender = self.sender()
-        gen = getattr(sender, "generation", None)
+    def _on_render_failed_for(self, gen: int, err: str) -> None:
         if gen != self._render_generation:
             return
         self.statusBar().showMessage(f"Error audio: {err}")
@@ -1126,7 +1123,9 @@ class MainWindow(QMainWindow):
                     data = wf.readframes(wf.getnframes())
                 if sw != 2:
                     raise RuntimeError(f"Sample width inesperado: {sw}")
-                self._main_play_obj = _sa.play_buffer(data, ch, sw, rate)
+                # Mantener bytes vivo por seguridad durante reproducción
+                self._main_audio_bytes = data
+                self._main_play_obj = _sa.play_buffer(self._main_audio_bytes, ch, sw, rate)
                 dur = self._wav_duration_ms(path)
 
                 def done() -> None:
@@ -1136,15 +1135,18 @@ class MainWindow(QMainWindow):
                     try:
                         if not self._main_play_obj.is_playing():
                             self._main_play_obj = None
+                            self._main_audio_bytes = None
                             self._maybe_stop_transport()
                     except Exception:
                         self._main_play_obj = None
+                        self._main_audio_bytes = None
                         self._maybe_stop_transport()
 
                 QTimer.singleShot(max(500, dur + 150), done)
                 return
             except Exception:
                 self._main_play_obj = None
+                self._main_audio_bytes = None
 
         # Fallbacks
         if self._prefer_winsound and _winsound is not None:
@@ -1185,6 +1187,8 @@ class MainWindow(QMainWindow):
         return float(self.roll.ppq) * (float(self._bpm) / 60.0)
 
     def _tick_playhead(self) -> None:
+        if not self._transport_running:
+            return
         # Avanza playhead basado en BPM, sin depender del backend de audio
         if not self._play_elapsed.isValid():
             return

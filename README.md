@@ -1,12 +1,12 @@
 # Piano Roll (Qt + Python)
 
-Piano roll sencillo hecho con **Python** y **Qt** (PySide6).
+A simple piano roll built with **Python** + **Qt** (PySide6).
 
-## Requisitos
+## Requirements
 
-- Python 3.10+ (recomendado)
+- Python 3.10+ (recommended)
 
-## Instalación
+## Install
 
 ```bash
 python -m venv .venv
@@ -14,45 +14,45 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Ejecutar
+## Run
 
 ```bash
 python main.py
 ```
 
-## Controles
+## Controls
 
-- **Rueda del mouse**: scroll vertical
-- **Shift + rueda**: scroll horizontal
-- **Ctrl + rueda**: zoom horizontal (tiempo)
-- **Clic y arrastrar (en la grilla)**: crear nota
-- **Arrastrar una nota**: moverla (tiempo y pitch)
-- **Supr / Delete**: borrar nota seleccionada
-- **Clic derecho sobre nota**: borrar nota
-- **Doble clic (en nota o grilla)**: pre-escucha del pitch (piano sintético)
-- **Play** (botón): reproduce desde el inicio
-- **Stop** (botón): para reproducción/render
-- **Espacio**: Play/Stop
+- **Mouse wheel**: vertical scroll
+- **Shift + wheel**: horizontal scroll
+- **Ctrl + wheel**: horizontal zoom (time)
+- **Left click + drag (grid)**: create a note
+- **Drag a note**: move it (time + pitch)
+- **Delete / Backspace**: delete selected note(s)
+- **Right click on a note**: delete note
+- **Double click (note or grid)**: pitch preview (synthetic piano)
+- **Play** (button): play from start
+- **Stop** (button): stop playback / stop render
+- **Space**: toggle Play/Stop
 - **Ctrl + 0**: reset zoom
-- **R**: activar/desactivar **Grabar**
-- **Flechas izquierda/derecha**: mover el **playhead**
-  - **Shift + flechas**: mover 1 beat
-  - **Ctrl + flechas**: mover 1 compás (4 beats)
-- **Ctrl + arriba/abajo**: cambiar **octava base** del teclado
-- **Alt + teclas de nota**: pre-escucha desde el teclado (sin grabar)
+- **R**: toggle **Record**
+- **Left/Right arrows**: move the **playhead**
+  - **Shift + arrows**: move 1 beat
+  - **Ctrl + arrows**: move 1 bar (4 beats)
+- **Ctrl + Up/Down**: change keyboard base octave
+- **Alt + note keys**: keyboard preview (without recording)
 
-## Grabación con teclado (PC)
+## Keyboard recording (PC)
 
-Con **Grabar (R)** activado, puedes “tocar” notas con el teclado:
+With **Record (R)** enabled, you can “play” notes using your computer keyboard:
 
-- Fila inferior: `Z S X D C V G B H N J M` (cromática)
-- Fila superior: `Q 2 W 3 E R 5 T 6 Y 7 U` (otra octava arriba)
+- Bottom row: `Z S X D C V G B H N J M` (chromatic)
+- Top row: `Q 2 W 3 E R 5 T 6 Y 7 U` (one octave up)
 
-## Notas
+## Notes
 
-- El widget dibuja teclas de piano a la izquierda y la grilla a la derecha.
-- El audio es un **piano sintético** simple (armónicos + envolvente), sin MIDI externo.
-- El tempo actual está fijo a **120 BPM** (se puede extender fácilmente).
-- En **Windows**, la reproducción usa `winsound` para máxima compatibilidad (y evitar casos donde QtMultimedia no suena).
-- Para **acordes / polifonía** al tocar con el teclado en modo **Grabar**, se usa `simpleaudio` (incluido en `requirements.txt`).
+- The widget draws piano keys on the left and a grid on the right.
+- Audio is a simple **synthetic piano** (harmonics + envelope). No external MIDI.
+- BPM is adjustable from the toolbar.
+- On **Windows**, some setups can be flaky with QtMultimedia; this project includes fallbacks.
+- For **chords / polyphony** when playing from the keyboard in **Record** mode, we use `simpleaudio` (included in `requirements.txt`).
 
