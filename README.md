@@ -2,6 +2,8 @@
 
 A simple piano roll built with **Python** + **Qt** (PySide6).
 
+![Capture of the project](assets/capture.png)
+
 ## Requirements
 
 - Python 3.10+ (recommended)
