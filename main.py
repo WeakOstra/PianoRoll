@@ -297,10 +297,12 @@ class PianoRollWidget(QWidget):
         ]
 
         # Interacción
-        self._mode: Optional[str] = None  # "create" | "drag"
+        self._mode: Optional[str] = None  # "create" | "drag" | "resize_l" | "resize_r"
+        self._resize_edge_px = 7
         self._press_pos = QPoint()
         self._press_note_index: Optional[int] = None
         self._press_note_start = 0
+        self._press_note_end = 0
         self._press_note_pitch = 60
         self._create_note_index: Optional[int] = None
         self._hover_pitch: Optional[int] = None
@@ -369,6 +371,28 @@ class PianoRollWidget(QWidget):
             if r.contains(p):
                 return i
         return None
+
+    def _hit_test_note_part(self, grid_pos: QPoint) -> tuple[Optional[int], Optional[str]]:
+        """
+        Devuelve (idx, part) donde part es:
+        - "left": borde izquierdo (resize)
+        - "right": borde derecho (resize)
+        - "body": cuerpo de la nota (drag)
+        """
+        x = grid_pos.x() + self.scroll_x
+        y = grid_pos.y() + self.scroll_y
+        p = QPoint(int(x), int(y))
+        for i in reversed(range(len(self.notes))):
+            r = self._note_rect_px(self.notes[i])
+            if not r.contains(p):
+                continue
+            # prioridad a bordes
+            if abs(x - r.left()) <= self._resize_edge_px:
+                return i, "left"
+            if abs(x - r.right()) <= self._resize_edge_px:
+                return i, "right"
+            return i, "body"
+        return None, None
 
     def _clear_selection(self) -> None:
         for n in self.notes:
@@ -618,6 +642,15 @@ class PianoRollWidget(QWidget):
             self._hover_pitch = None
             self._hover_tick = None
 
+        # Cursor feedback para resize
+        if self._mode is None and grid.contains(pos):
+            local = QPoint(pos.x() - self.key_width, pos.y() - self.header_h)
+            hit_i, part = self._hit_test_note_part(local)
+            if hit_i is not None and part in ("left", "right"):
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+
         if self._mode == "create" and self._create_note_index is not None:
             idx = self._create_note_index
             note = self.notes[idx]
@@ -652,6 +685,27 @@ class PianoRollWidget(QWidget):
             self.update()
             return
 
+        if self._mode in ("resize_l", "resize_r") and self._press_note_index is not None:
+            idx = self._press_note_index
+            note = self.notes[idx]
+
+            local = QPoint(pos.x() - self.key_width, pos.y() - self.header_h)
+            x = local.x() + self.scroll_x
+            tick = max(0, self._quantize_tick(self.x_to_tick(x)))
+
+            if self._mode == "resize_r":
+                new_end = max(note.start + self.quant, tick)
+                note.length = max(self.quant, new_end - note.start)
+            else:
+                # resize_l mantiene el end original
+                new_start = min(tick, self._press_note_end - self.quant)
+                new_start = max(0, new_start)
+                note.start = new_start
+                note.length = max(self.quant, self._press_note_end - note.start)
+
+            self.update()
+            return
+
         self.update()
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
@@ -666,14 +720,20 @@ class PianoRollWidget(QWidget):
                 return
 
             local = QPoint(self._press_pos.x() - self.key_width, self._press_pos.y() - self.header_h)
-            hit = self._hit_test_note(local)
+            hit, part = self._hit_test_note_part(local)
             if hit is not None:
                 self._select_one(hit)
-                self._mode = "drag"
                 self._press_note_index = hit
                 self._press_note_start = self.notes[hit].start
+                self._press_note_end = self.notes[hit].end
                 self._press_note_pitch = self.notes[hit].pitch
                 self.playhead_tick = self._quantize_tick(self.notes[hit].start)
+                if part == "left":
+                    self._mode = "resize_l"
+                elif part == "right":
+                    self._mode = "resize_r"
+                else:
+                    self._mode = "drag"
                 self.update()
                 return
 
@@ -708,6 +768,7 @@ class PianoRollWidget(QWidget):
             self._mode = None
             self._press_note_index = None
             self._create_note_index = None
+            self.unsetCursor()
             self.update()
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
@@ -733,7 +794,9 @@ class PianoRollWidget(QWidget):
         if event.key() in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             self.delete_selected()
             return
-        if event.matches(QKeySequence.StandardKey.ZoomReset):  # Ctrl+0
+        # Algunas versiones de PySide6 no tienen QKeySequence.StandardKey.ZoomReset.
+        # Usamos un check explícito para Ctrl+0.
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier) and event.key() in (Qt.Key.Key_0, Qt.Key.Key_ParenRight):
             self.beat_w = 80.0
             self.scroll_x = 0
             self._recompute_scrollbars()
